@@ -54,25 +54,23 @@ class TC36_25:
         return f"{total:02x}"
 
     def _tx(self, cmd: str, value_hex: str) -> str:
-        """
-        Send command, return the raw payload from the controller
-        (8 data chars) – raises RuntimeError on checksum / framing error.
-        """
         payload = ADDR + cmd + value_hex
         frame = STX + payload + self._csum(payload) + ETX
-        # stream out character‑by‑character with pacing
         for ch in frame:
             self.ser.write(ch.encode())
             time.sleep(self.delay_char)
 
-        # Controller echoes:  *DDDDDDDDSS^
+        # Reply: *DDDDDDDDSS^  (12 bytes)
         reply = self.ser.read_until(ACK.encode()).decode()
-        if len(reply) != 11 or reply[0] != STX or reply[-1] != ACK:
-            raise RuntimeError("Malformed reply")
+        if len(reply) != 12 or reply[0] != STX or reply[-1] != ACK:
+            raise RuntimeError(f"Malformed reply: {reply!r}")
+
         data, rcv_sum = reply[1:9], reply[9:11]
         if rcv_sum != self._csum(data):
             raise RuntimeError("Checksum mismatch")
+
         return data.lower()
+
 
     def _write(self, cmd: str, value_hex: str = "00000000"):
         self._tx(cmd, value_hex)
