@@ -1,54 +1,31 @@
+import serial
+import time
 
-[TEST] Baud: 9600, Parity: N, Cmd: plain_4C
-Response: b''
+MONITOR_PORT = 'COM16'
+BAUD_RATE = 19200       # Adjust to match original software
+TIMEOUT = 2
 
-[TEST] Baud: 9600, Parity: N, Cmd: stx_etx
-Response: b''
+def main():
+    try:
+        with serial.Serial(
+            MONITOR_PORT,
+            baudrate=BAUD_RATE,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=TIMEOUT
+        ) as ser:
+            print(f"Listening on {MONITOR_PORT} at {BAUD_RATE} baud...\n")
 
-[TEST] Baud: 9600, Parity: N, Cmd: with_checksum
-Response: b''
+            while True:
+                data = ser.read(ser.in_waiting or 1)
+                if data:
+                    hex_dump = " ".join(f"{byte:02X}" for byte in data)
+                    ascii_dump = "".join(chr(b) if 32 <= b <= 126 else '.' for b in data)
+                    print(f"HEX: {hex_dump}   | ASCII: {ascii_dump}")
 
-[TEST] Baud: 9600, Parity: O, Cmd: plain_4C
-Response: b''
+    except serial.SerialException as e:
+        print(f"Serial error: {e}")
 
-[TEST] Baud: 9600, Parity: O, Cmd: stx_etx
-Response: b''
-
-[TEST] Baud: 9600, Parity: O, Cmd: with_checksum
-Response: b''
-
-[TEST] Baud: 9600, Parity: E, Cmd: plain_4C
-Response: b''
-
-[TEST] Baud: 9600, Parity: E, Cmd: stx_etx
-Response: b''
-
-[TEST] Baud: 9600, Parity: E, Cmd: with_checksum
-Response: b''
-
-[TEST] Baud: 19200, Parity: N, Cmd: plain_4C
-Response: b''
-
-[TEST] Baud: 19200, Parity: N, Cmd: stx_etx
-Response: b''
-
-[TEST] Baud: 19200, Parity: N, Cmd: with_checksum
-Response: b''
-
-[TEST] Baud: 19200, Parity: O, Cmd: plain_4C
-Response: b''
-
-[TEST] Baud: 19200, Parity: O, Cmd: stx_etx
-Response: b''
-
-[TEST] Baud: 19200, Parity: O, Cmd: with_checksum
-Response: b''
-
-[TEST] Baud: 19200, Parity: E, Cmd: plain_4C
-Response: b''
-
-[TEST] Baud: 19200, Parity: E, Cmd: stx_etx
-Response: b''
-
-[TEST] Baud: 19200, Parity: E, Cmd: with_checksum
-Response: b''
+if __name__ == "__main__":
+    main()
