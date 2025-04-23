@@ -19,6 +19,7 @@ import imu
 import spectrometer
 import utils
 from temp_controller import TC36_25
+from filterwheel import *
 
 class MainWindow(QMainWindow):
     def __init__(self):
