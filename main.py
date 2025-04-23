@@ -18,6 +18,7 @@ import motor
 import imu
 import spectrometer
 import utils
+from temp_controller import TC36_25
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -215,7 +216,7 @@ class MainWindow(QMainWindow):
         self.current_motor_angle = 0.0
         self.imu_serial = None
         self.imu_connected = False
-        self.latest_data = {"accel": (0.0, 0.0, 0.0), "gyro": (0.0,0.0,0.0), "mag":(0.0,0.0,0.0), "rpy":(0.0,0.0,0.0), "pressure":0.0, "temperature":0.0, "latitude":39.0, "longitude":-76.0}
+        self.latest_data = {"accel": (0.0, 0.0, 0.0), "gyro": (0.0,0.0,0.0), "mag":(0.0,0.0,0.0), "rpy":(0.0,0.0,0.0), "pressure":0.0, "temperature":0.0, "latitude":39.0, "longitude":-76.0, "TempController_curr": 20, "TempController_set": 20}
 
     def update_camera_frame(self):
         # Update camera frame to the QLabel
@@ -520,7 +521,8 @@ class MainWindow(QMainWindow):
                     "Roll_deg", "Pitch_deg", "Yaw_deg",
                     "AccelX_g", "AccelY_g", "AccelZ_g", "GyroX_dps", "GyroY_dps", "GyroZ_dps",
                     "MagX_uT", "MagY_uT", "MagZ_uT", "Pressure_hPa", "Temperature_C",
-                    "Latitude_deg", "Longitude_deg", "IntegrationTime_us"
+                    "Latitude_deg", "Longitude_deg", "IntegrationTime_us", "TempController_curr", 
+                    "TempController_set"
                 ]
                 # Append one column per wavelength (e.g., I_500.00nm)
                 for wl in (self.wavelengths if isinstance(self.wavelengths, (list, np.ndarray)) else []):
@@ -580,6 +582,8 @@ class MainWindow(QMainWindow):
         lat = self.latest_data.get("latitude", 0.0)
         lon = self.latest_data.get("longitude", 0.0)
         integration_us = getattr(self, "current_integration_time_us", 0)
+        TempController_curr = self.latest_data.get("TempController_curr", 0.0)
+        TempController_set = self.latest_data.get("TempController_set", 0.0)
         # Prepare CSV row fields
         row_fields = [
             ts_csv,
@@ -605,7 +609,9 @@ class MainWindow(QMainWindow):
             f"{temp:.2f}",
             f"{lat:.6f}",
             f"{lon:.6f}",
-            str(int(integration_us))
+            str(int(integration_us)),
+            f"{TempController_curr:2f}",
+            f"{TempController_set:2f}"
         ]
         # Append intensity values for each wavelength (empty string if intensity is zero or missing)
         if self.intensities and isinstance(self.wavelengths, (list, np.ndarray)) and len(self.intensities) == len(self.wavelengths):
