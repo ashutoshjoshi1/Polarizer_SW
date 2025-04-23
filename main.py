@@ -128,6 +128,62 @@ class MainWindow(QMainWindow):
         motor_layout.addWidget(self.angle_input, 1, 1)
         motor_layout.addWidget(self.move_button, 1, 2)
 
+        # --- Filter Wheel controls (added in MainWindow.__init__) ---
+        filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(10)
+        filter_layout.addWidget(QLabel("FilterWheel COM:"))
+        self.filter_port_combo = QComboBox()
+        self.filter_port_combo.setEditable(True)
+        # Populate available ports, default to COM17
+        for port in list_ports.comports():
+            name = getattr(port, 'name', port.device)
+            self.filter_port_combo.addItem(name)
+        if self.filter_port_combo.count() == 0:
+            # If no ports detected, provide some common options
+            for n in range(1, 10):
+                self.filter_port_combo.addItem(f"COM{n}")
+        self.filter_port_combo.setCurrentText("COM17")  # default selection
+        filter_layout.addWidget(self.filter_port_combo)
+        
+        filter_layout.addWidget(QLabel("Command:"))
+        self.filter_cmd_input = QLineEdit()
+        self.filter_cmd_input.setPlaceholderText("Enter filter command")
+        filter_layout.addWidget(self.filter_cmd_input)
+        
+        self.filter_send_button = QPushButton("Send")
+        self.filter_send_button.clicked.connect(self.on_send_filter)
+        filter_layout.addWidget(self.filter_send_button)
+        
+        filter_layout.addWidget(QLabel("Current Pos:"))
+        self.filter_pos_label = QLabel("--")
+        filter_layout.addWidget(self.filter_pos_label)
+        filter_layout.addStretch(1)  # push controls to the left if there's extra space
+        
+        # Group box for filter wheel
+        self.filter_group = QGroupBox("Filter Wheel")
+        self.filter_group.setLayout(filter_layout)
+        
+        # Add the Filter Wheel group box into the main layout (e.g., on the right side panel)
+        right_layout.addWidget(self.motor_group)
+        right_layout.addWidget(self.filter_group)       # insert Filter Wheel panel
+        right_layout.addWidget(self.imu_group)
+        
+        # ... (other initialization code) ...
+        
+        # State variables for filter wheel
+        self.filterwheel_serial = None
+        self.filterwheel_connected = False
+        self.current_filter_position = None
+        self.filterwheel_port = None
+        
+        self.filter_send_button.setEnabled(False)  # disable Send until initial reset completes
+        
+        # Attempt to connect to filter wheel on startup and reset to position 1
+        self.filter_thread = filterwheel.FilterWheelConnectThread("COM17")
+        self.filter_thread.result_signal.connect(self.on_filter_connect_result)
+        self.filter_thread.start()
+
+
         # --- IMU controls ---
         imu_controls_layout = QHBoxLayout()
         imu_com_label = QLabel("IMU COM:")
@@ -483,6 +539,79 @@ class MainWindow(QMainWindow):
         # Stop plot update timer
         if hasattr(self, 'spec_timer'):
             self.spec_timer.stop()
+
+    def on_filter_connect_result(self, ser_obj, message):
+        """Slot for filter wheel connection attempt result."""
+        self.filter_send_button.setEnabled(True)  # re-enable send on completion
+        if ser_obj and ser_obj.is_open:
+            # Connection succeeded
+            self.filterwheel_serial = ser_obj
+            self.filterwheel_connected = True
+            self.filterwheel_port = ser_obj.port  # store the port name
+            # Immediately send "F1r" to reset wheel to position 1 in the background
+            self.status_bar.showMessage("Filter wheel connected. Resetting to position 1...")
+            self.filter_cmd_thread = filterwheel.FilterWheelCommandThread(self.filterwheel_serial, "F1r")
+            self.filter_cmd_thread.result_signal.connect(self.on_filter_command_result)
+            self.filter_cmd_thread.start()
+            self.filter_send_button.setEnabled(False)  # disable until reset command finishes
+        else:
+            # Connection failed
+            self.filterwheel_serial = None
+            self.filterwheel_connected = False
+            self.status_bar.showMessage(message)
+            # (Leave position label as "--")
+    
+    def on_send_filter(self):
+        """Send a user-entered command to the filter wheel."""
+        cmd = self.filter_cmd_input.text().strip()
+        if not cmd:
+            self.status_bar.showMessage("Please enter a filter wheel command.")
+            return
+        port_name = self.filter_port_combo.currentText().strip()
+        if not port_name:
+            self.status_bar.showMessage("Please select a COM port for the filter wheel.")
+            return
+        # If not connected or if port changed, (re)open the serial port
+        if self.filterwheel_serial is None or not self.filterwheel_serial.is_open or port_name != self.filterwheel_port:
+            # Close existing connection if open
+            if self.filterwheel_serial and self.filterwheel_serial.is_open:
+                try: 
+                    self.filterwheel_serial.close()
+                except: 
+                    pass
+            try:
+                # Open the new port (4800 baud, 8N1)
+                self.filterwheel_serial = serial.Serial(port_name, baudrate=4800, timeout=1)
+                self.filterwheel_port = port_name
+                self.filterwheel_connected = True
+            except Exception as e:
+                self.filterwheel_serial = None
+                self.filterwheel_connected = False
+                self.status_bar.showMessage(f"Failed to open {port_name}: {e}")
+                return
+        # Send the command in background thread
+        self.filter_cmd_thread = filterwheel.FilterWheelCommandThread(self.filterwheel_serial, cmd)
+        self.filter_cmd_thread.result_signal.connect(self.on_filter_command_result)
+        self.filter_cmd_thread.start()
+        self.filter_send_button.setEnabled(False)  # disable button while command is in progress
+    
+    def on_filter_command_result(self, pos, message):
+        """Slot to handle the result of a filter wheel command (position update or error)."""
+        self.filter_send_button.setEnabled(True)  # re-enable the Send button now that operation finished
+        if pos is not None:
+            # Successfully got a position reading
+            self.current_filter_position = pos
+            self.filter_pos_label.setText(str(pos))
+        else:
+            # Communication error or no response; if serial port got closed due to error, update state
+            if self.filterwheel_serial and not self.filterwheel_serial.is_open:
+                self.filterwheel_serial = None
+                self.filterwheel_connected = False
+                self.filter_pos_label.setText("--")
+        # Show the status message (e.g., "Filter wheel moved to position X." or error notice)
+        self.status_bar.showMessage(message)
+
+
     def on_save_data(self):
         """Save the current spectral data to a CSV file (snapshot of wavelengths and intensities)."""
         if not self.intensities or not hasattr(self.wavelengths, '__len__'):
@@ -517,7 +646,7 @@ class MainWindow(QMainWindow):
                 # Write CSV header
                 header_fields = [
                     "Timestamp", "MotorPos_steps", "MotorSpeed_steps_s", "MotorCurrent_pct",
-                    "MotorAlarmCode", "MotorTemp_C", "MotorAngle_deg",
+                    "MotorAlarmCode", "MotorTemp_C", "MotorAngle_deg", "FilterWheel 1", 
                     "Roll_deg", "Pitch_deg", "Yaw_deg",
                     "AccelX_g", "AccelY_g", "AccelZ_g", "GyroX_dps", "GyroY_dps", "GyroZ_dps",
                     "MagX_uT", "MagY_uT", "MagZ_uT", "Pressure_hPa", "Temperature_C",
@@ -593,6 +722,7 @@ class MainWindow(QMainWindow):
             str(motor_alarm),
             "" if motor_temp is None else f"{motor_temp:.1f}",
             f"{motor_angle:.1f}",
+            (str(self.current_filter_position) if self.current_filter_position is not None else ""), 
             f"{roll:.2f}",
             f"{pitch:.2f}",
             f"{yaw:.2f}",
