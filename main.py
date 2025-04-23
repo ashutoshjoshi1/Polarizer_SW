@@ -141,6 +141,18 @@ class MainWindow(QMainWindow):
         self.motor_group = QGroupBox("Motor")
         self.motor_group.setLayout(motor_layout)
 
+        # ── toggle_data_saving ───────────────────────────────────────────────
+        self.csv_file     = None
+        self.log_file     = None
+        self.csv_dir      = "data"
+        self.log_dir      = "data"
+        os.makedirs(self.csv_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        self.continuous_saving = False
+        self.save_data_timer   = QTimer(self)
+        self.save_data_timer.timeout.connect(self.save_continuous_data)
+
         # ── Filter Wheel Controls ───────────────────────────────────────────────
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(QLabel("FilterWheel COM:"))
