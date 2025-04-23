@@ -6,8 +6,10 @@ import serial
 import numpy as np
 from datetime import datetime, timezone
 from serial.tools import list_ports
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout
-from PyQt5.QtWidgets import QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox, QSplitter, QStatusBar
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox, QSplitter, QStatusBar
+)
 from PyQt5.QtCore import QTimer, Qt, QDateTime
 from PyQt5.QtGui import QPixmap, QImage
 import pyqtgraph as pg
@@ -36,6 +38,19 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(8)
+
+        # Prepare data logging state and directory
+        self.continuous_saving = False
+        self.save_data_timer = QTimer()
+        self.save_data_timer.timeout.connect(self.save_continuous_data)
+        self.csv_dir = "data_logs/csv"
+        self.log_dir = "data_logs/logs"
+        os.makedirs(self.csv_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.csv_file = None
+        self.log_file = None
+        self.csv_file_path = None
+        self.log_file_path = None
 
         # Logo (optional)
         logo_layout = QHBoxLayout()
@@ -69,7 +84,7 @@ class MainWindow(QMainWindow):
 
         # Initialize temperature controller
         try:
-            self.tc = TC36_25()  # default port COM16
+            self.tc = TC36_25()
             self.tc.enable_computer_setpoint()
             self.tc.power(True)
             # Timer to update current temperature every second
@@ -137,8 +152,6 @@ class MainWindow(QMainWindow):
         for port in ports:
             name = getattr(port, 'name', port.device)
             self.imu_port_combo.addItem(name)
-        for n in range(1, 10):
-            pass  # placeholder if none
         self.imu_baud_combo = QComboBox()
         for b in [9600, 57600, 115200]:
             self.imu_baud_combo.addItem(str(b))
@@ -205,19 +218,19 @@ class MainWindow(QMainWindow):
         plots_splitter.setStretchFactor(1, 2)
         main_layout.addWidget(plots_splitter, stretch=1)
 
-        # State variables
-        self.motor_serial = None
-        self.motor_connected = False
-        self.spec_handle = None
-        self.measurement_active = False
-        self.wavelengths = []
-        self.intensities = []
-        self.num_pixels = 0
-        self.current_motor_angle = 0.0
-        self.imu_serial = None
-        self.imu_connected = False
-        self.latest_data = {"accel": (0.0, 0.0, 0.0), "gyro": (0.0,0.0,0.0), "mag":(0.0,0.0,0.0), "rpy":(0.0,0.0,0.0), "pressure":0.0, "temperature":0.0, "latitude":39.0, "longitude":-76.0, "TempController_curr": 20, "TempController_set": 20}
-
+        # Latest sensor data
+        self.latest_data = {
+            "accel": (0.0, 0.0, 0.0),
+            "gyro": (0.0, 0.0, 0.0),
+            "mag": (0.0, 0.0, 0.0),
+            "rpy": (0.0, 0.0, 0.0),
+            "pressure": 0.0,
+            "temperature": 0.0,
+            "latitude": 39.0,
+            "longitude": -76.0,
+            "TempController_curr": 0.0,
+            "TempController_set": 20.0
+        }
     def update_camera_frame(self):
         # Update camera frame to the QLabel
         if self.camera.isOpened():
@@ -501,161 +514,155 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Snapshot saved to {filename}")
         except Exception as e:
             self.status_bar.showMessage(f"Snapshot save failed: {e}")
+
     def toggle_data_saving(self):
-        """Start or stop continuous data logging to CSV and text log files."""
         if not self.continuous_saving:
-            # Start logging to new files
-            if self.csv_file or self.log_file:
-                if self.csv_file: self.csv_file.close()
-                if self.log_file: self.log_file.close()
+            # Start logging
+            if self.csv_file: self.csv_file.close()
+            if self.log_file: self.log_file.close()
             timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
             self.csv_file_path = os.path.join(self.csv_dir, f"log_{timestamp}.csv")
             self.log_file_path = os.path.join(self.log_dir, f"log_{timestamp}.txt")
             try:
                 self.csv_file = open(self.csv_file_path, 'w', newline='', encoding='utf-8')
                 self.log_file = open(self.log_file_path, 'w', encoding='utf-8')
-                # Write CSV header
-                header_fields = [
-                    "Timestamp", "MotorPos_steps", "MotorSpeed_steps_s", "MotorCurrent_pct",
-                    "MotorAlarmCode", "MotorTemp_C", "MotorAngle_deg",
-                    "Roll_deg", "Pitch_deg", "Yaw_deg",
-                    "AccelX_g", "AccelY_g", "AccelZ_g", "GyroX_dps", "GyroY_dps", "GyroZ_dps",
-                    "MagX_uT", "MagY_uT", "MagZ_uT", "Pressure_hPa", "Temperature_C",
-                    "Latitude_deg", "Longitude_deg", "IntegrationTime_us", "TempController_curr", 
-                    "TempController_set"
+                headers = [
+                    "Timestamp","MotorPos_steps","MotorSpeed_steps_s","MotorCurrent_pct",
+                    "MotorAlarmCode","MotorTemp_C","MotorAngle_deg",
+                    "Roll_deg","Pitch_deg","Yaw_deg",
+                    "AccelX_g","AccelY_g","AccelZ_g","GyroX_dps","GyroY_dps","GyroZ_dps",
+                    "MagX_uT","MagY_uT","MagZ_uT","Pressure_hPa","Temperature_C",
+                    "Latitude_deg","Longitude_deg","IntegrationTime_us",
+                    "TempController_curr","TempController_set"
                 ]
-                # Append one column per wavelength (e.g., I_500.00nm)
-                for wl in (self.wavelengths if isinstance(self.wavelengths, (list, np.ndarray)) else []):
-                    header_fields.append(f"I_{float(wl):.2f}nm")
-                self.csv_file.write(",".join(header_fields) + "\n")
-                # Start periodic logging (1 Hz)
+                for wl in self.wavelengths:
+                    headers.append(f"I_{wl:.2f}nm")
+                self.csv_file.write(",".join(headers)+"\n")
                 self.save_data_timer.start(1000)
                 self.continuous_saving = True
                 self.toggle_save_button.setText("Pause Saving")
                 self.status_bar.showMessage(f"Started saving data to {self.csv_file_path}")
             except Exception as e:
                 self.status_bar.showMessage(f"Failed to start saving: {e}")
-                # Ensure no file is left open on failure
-                if self.csv_file:
-                    self.csv_file.close()
-                    self.csv_file = None
-                if self.log_file:
-                    self.log_file.close()
-                    self.log_file = None
-                return
         else:
             # Stop logging
             self.continuous_saving = False
             self.save_data_timer.stop()
-            if self.csv_file:
-                self.csv_file.close()
-                self.csv_file = None
-            if self.log_file:
-                self.log_file.close()
-                self.log_file = None
+            if self.csv_file: self.csv_file.close(); self.csv_file=None
+            if self.log_file: self.log_file.close(); self.log_file=None
             self.toggle_save_button.setText("Start Saving")
-            if self.csv_file_path and self.log_file_path:
-                self.status_bar.showMessage(f"Data saved to {self.csv_file_path} and {self.log_file_path}")
-            else:
-                self.status_bar.showMessage("Data logging stopped.")
+            self.status_bar.showMessage("Data logging stopped.")
+
     def save_continuous_data(self):
-        """Log one data sample (sensors + spectrum) to the CSV and text files."""
         if not self.csv_file or not self.log_file:
-            return  # Not actively logging
+            return
+
+        # Timestamp for CSV (with ms) and for log (no ms)
         now = QDateTime.currentDateTime()
         ts_csv = now.toString("yyyy-MM-dd hh:mm:ss.zzz")
         ts_txt = now.toString("yyyy-MM-dd hh:mm:ss")
+
         # Motor data
         motor_pos = int(self.current_motor_angle)
-        motor_angle = float(self.current_motor_angle)
         motor_speed = motor.TrackerSpeed
-        motor_current_pct = motor.TrackerCurrent / 10.0  # e.g., 1000 -> 100.0%
+        motor_current_pct = motor.TrackerCurrent / 10.0
         motor_alarm = 0
-        motor_temp = None  # (motor temperature not available)
+        motor_temp = None  # replace with real reading if you have it
+
         # IMU data
         roll, pitch, yaw = self.latest_data["rpy"]
-        ax_g, ay_g, az_g = self.latest_data.get("accel", (0.0, 0.0, 0.0))
-        gx_dps, gy_dps, gz_dps = self.latest_data.get("gyro", (0.0, 0.0, 0.0))
-        mx_uT, my_uT, mz_uT = self.latest_data.get("mag", (0.0, 0.0, 0.0))
-        pres = self.latest_data.get("pressure", 0.0)
-        temp = self.latest_data.get("temperature", 0.0)
-        lat = self.latest_data.get("latitude", 0.0)
-        lon = self.latest_data.get("longitude", 0.0)
-        integration_us = getattr(self, "current_integration_time_us", 0)
-        TempController_curr = self.latest_data.get("TempController_curr", 0.0)
-        TempController_set = self.latest_data.get("TempController_set", 0.0)
-        # Prepare CSV row fields
-        row_fields = [
+        ax, ay, az = self.latest_data["accel"]
+        gx, gy, gz = self.latest_data["gyro"]
+        mx, my, mz = self.latest_data["mag"]
+        pres = self.latest_data["pressure"]
+        temp = self.latest_data["temperature"]
+        lat = self.latest_data["latitude"]
+        lon = self.latest_data["longitude"]
+
+        # Spectrometer data
+        integ = getattr(self, "current_integration_time_us", 0)
+        tc_curr = self.latest_data.get("TempController_curr", 0.0)
+        tc_set = self.latest_data.get("TempController_set", 0.0)
+
+        # --- Write CSV row ---
+        row = [
             ts_csv,
             str(motor_pos),
             str(motor_speed),
             f"{motor_current_pct:.1f}",
             str(motor_alarm),
             "" if motor_temp is None else f"{motor_temp:.1f}",
-            f"{motor_angle:.1f}",
+            f"{motor_pos:.1f}",
             f"{roll:.2f}",
             f"{pitch:.2f}",
             f"{yaw:.2f}",
-            f"{ax_g:.2f}",
-            f"{ay_g:.2f}",
-            f"{az_g:.2f}",
-            f"{gx_dps:.2f}",
-            f"{gy_dps:.2f}",
-            f"{gz_dps:.2f}",
-            f"{mx_uT:.2f}",
-            f"{my_uT:.2f}",
-            f"{mz_uT:.2f}",
+            f"{ax:.2f}",
+            f"{ay:.2f}",
+            f"{az:.2f}",
+            f"{gx:.2f}",
+            f"{gy:.2f}",
+            f"{gz:.2f}",
+            f"{mx:.2f}",
+            f"{my:.2f}",
+            f"{mz:.2f}",
             f"{pres:.2f}",
             f"{temp:.2f}",
             f"{lat:.6f}",
             f"{lon:.6f}",
-            str(int(integration_us)),
-            f"{TempController_curr:2f}",
-            f"{TempController_set:2f}"
+            str(int(integ)),
+            f"{tc_curr:.2f}",
+            f"{tc_set:.2f}"
         ]
-        # Append intensity values for each wavelength (empty string if intensity is zero or missing)
-        if self.intensities and isinstance(self.wavelengths, (list, np.ndarray)) and len(self.intensities) == len(self.wavelengths):
-            for inten in self.intensities:
-                if inten != 0:
-                    row_fields.append(f"{inten:.4f}")
-                else:
-                    row_fields.append("")
-        else:
-            for _ in (self.wavelengths if isinstance(self.wavelengths, (list, np.ndarray)) else []):
-                row_fields.append("")
-        # Write CSV line
-        csv_line = ",".join(row_fields)
+        # append spectral intensities
+        for inten in self.intensities:
+            row.append(f"{inten:.4f}" if inten != 0 else "")
+
         try:
-            self.csv_file.write(csv_line + "\n")
+            self.csv_file.write(",".join(row) + "\n")
+            self.csv_file.flush()
         except Exception as e:
-            self.status_bar.showMessage(f"Error during data save: {e}")
-        # Write text log line (human-readable summary)
-        peak_text = ""
-        if self.intensities and len(self.intensities) > 0:
-            max_intensity = max(self.intensities)
-            if max_intensity != 0:
-                max_idx = self.intensities.index(max_intensity) if isinstance(self.intensities, list) else int(np.argmax(self.intensities))
-                peak_text = f"Peak {max_intensity:.1f} at {self.wavelengths[max_idx]:.1f} nm"
+            self.status_bar.showMessage(f"Error writing CSV: {e}")
+
+        # --- Build and write human-readable log line ---
+        # find peak
+        if self.intensities:
+            max_int = max(self.intensities)
+            if max_int != 0:
+                idx = self.intensities.index(max_int)
+                peak_text = f"Peak {max_int:.1f} at {self.wavelengths[idx]:.1f} nm"
             else:
                 peak_text = "Peak 0 at N/A nm"
         else:
             peak_text = "Peak 0 at N/A nm"
+
         motor_temp_text = f"{motor_temp:.1f}°C" if motor_temp is not None else "N/A"
-        log_line = (f"Time {ts_txt}: Motor at {motor_pos} steps ({motor_angle:.0f}°), "
-                    f"Speed {motor_speed} steps/s, Current {motor_current_pct:.1f}%, "
-                    f"Temp {motor_temp_text}, AlarmCode {motor_alarm}; "
-                    f"Spectrometer {peak_text}; IMU Orientation: Roll {roll:.1f}°, "
-                    f"Pitch {pitch:.1f}°, Yaw {yaw:.1f}°; GPS: Lat {lat:.6f}°, Lon {lon:.6f}°.\n")
+
+        log_line = (
+            f"Time {ts_txt}: "
+            f"Motor at {motor_pos} steps ({motor_pos}°), "
+            f"Speed {motor_speed} steps/s, "
+            f"Current {motor_current_pct:.1f}%, "
+            f"Temp {motor_temp_text}, "
+            f"AlarmCode {motor_alarm}; "
+            f"Spectrometer {peak_text}; "
+            f"IMU: Roll {roll:.1f}°, Pitch {pitch:.1f}°, Yaw {yaw:.1f}°; "
+            f"GPS: {lat:.6f},{lon:.6f}; "
+            f"TempCtrl Curr {tc_curr:.2f}°C, Set {tc_set:.2f}°C\n"
+        )
+
         try:
             self.log_file.write(log_line)
+            self.log_file.flush()
         except Exception as e:
             self.status_bar.showMessage(f"Error writing log: {e}")
+
 
     # --- Temperature control handlers ---
     def on_send_temp(self):
         try:
             temp = float(self.set_temp_input.text().strip())
             self.tc.set_setpoint(temp)
+            self.latest_data["TempController_set"] = temp
             self.status_bar.showMessage(f"Setpoint updated to {temp:.2f} °C")
         except Exception as e:
             self.status_bar.showMessage(f"Failed to set temperature: {e}")
@@ -664,9 +671,11 @@ class MainWindow(QMainWindow):
         try:
             t = self.tc.get_temperature()
             self.current_temp_label.setText(f"{t:.2f} °C")
+            self.latest_data["TempController_curr"] = t
         except Exception as e:
             self.current_temp_label.setText("-- °C")
             self.status_bar.showMessage(f"Error reading temperature: {e}")
+
             
     def closeEvent(self, event):
         """Cleanup on application close."""
