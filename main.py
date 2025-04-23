@@ -164,11 +164,25 @@ class MainWindow(QMainWindow):
         self.filter_group.setLayout(filter_layout)
         
         # Add the Filter Wheel group box into the main layout (e.g., on the right side panel)
-        right_layout.addWidget(self.motor_group)
-        right_layout.addWidget(self.filter_group)       # insert Filter Wheel panel
-        right_layout.addWidget(self.imu_group)
+
+        # Build the right-hand panel
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
         
-        # ... (other initialization code) ...
+        right_layout.addWidget(self.motor_group)     # motor controls
+        right_layout.addWidget(self.filter_group)    # ← your new Filter Wheel panel
+        right_layout.addWidget(self.imu_group)       # IMU controls
+        
+        # Now plug that container into the splitter
+        plots_splitter = QSplitter(Qt.Horizontal)
+        plots_splitter.addWidget(self.spectro_group)
+        plots_splitter.addWidget(right_container)
+        plots_splitter.setStretchFactor(0, 3)
+        plots_splitter.setStretchFactor(1, 2)
+        main_layout.addWidget(plots_splitter, stretch=1)
+
         
         # State variables for filter wheel
         self.filterwheel_serial = None
