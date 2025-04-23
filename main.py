@@ -26,36 +26,33 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Spectrometer, Motor, IMU & Temperature Control")
         self.setMinimumSize(1000, 750)
 
-        # Status bar
+        # ── Status bar ──────────────────────────────────────────────────────────
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
-        # Central widget and layout
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        # ── Central widget & layout ────────────────────────────────────────────
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(8)
 
-        # Logo (optional)
+        # ── Logo ────────────────────────────────────────────────────────────────
         logo_layout = QHBoxLayout()
         logo_layout.addStretch()
-        logo_label = QLabel()
-        pixmap = QPixmap("asset/sciglob_symbol.png")
-        if not pixmap.isNull():
-            logo_label.setPixmap(
-                pixmap.scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
-        logo_layout.addWidget(logo_label)
+        logo = QLabel()
+        pix = QPixmap("asset/sciglob_symbol.png")
+        if not pix.isNull():
+            logo.setPixmap(pix.scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo_layout.addWidget(logo)
         main_layout.addLayout(logo_layout)
 
-        # --- Temperature Control section ---
+        # ── Temperature Control ─────────────────────────────────────────────────
         temp_layout = QHBoxLayout()
         temp_layout.setSpacing(10)
         temp_layout.addWidget(QLabel("Set Temp (°C):"))
-        self.set_temp_input = QLineEdit()
+        self.set_temp_input = QLineEdit("20.0")
         self.set_temp_input.setFixedWidth(60)
-        self.set_temp_input.setText("20.0")  # default 20°C
         temp_layout.addWidget(self.set_temp_input)
         self.send_temp_button = QPushButton("Send Cmd")
         self.send_temp_button.clicked.connect(self.on_send_temp)
@@ -67,215 +64,181 @@ class MainWindow(QMainWindow):
         temp_layout.addStretch()
         main_layout.addLayout(temp_layout)
 
-        # Initialize temperature controller
+        # Initialize temperature controller and timer
         try:
-            self.tc = TC36_25()  # default port COM16
+            self.tc = TC36_25()  # COM16 default
             self.tc.enable_computer_setpoint()
             self.tc.power(True)
-            # Timer to update current temperature every second
             self.temp_timer = QTimer()
             self.temp_timer.timeout.connect(self.update_temperature)
             self.temp_timer.start(1000)
         except Exception as e:
-            self.status_bar.showMessage(f"Temp controller init failed: {e}")
+            self.status_bar.showMessage(f"Temp ctrl init failed: {e}")
 
-        # --- Spectrometer controls ---
-        spectro_controls_layout = QHBoxLayout()
+        # ── Spectrometer Controls & Plot ────────────────────────────────────────
+        spectro_controls = QHBoxLayout()
         self.toggle_save_button = QPushButton("Start Saving")
         self.toggle_save_button.setEnabled(False)
         self.toggle_save_button.clicked.connect(self.toggle_data_saving)
+        spectro_controls.addWidget(self.toggle_save_button)
         self.connect_spec_button = QPushButton("Connect Spectrometer")
         self.connect_spec_button.clicked.connect(self.on_connect_spectrometer)
+        spectro_controls.addWidget(self.connect_spec_button)
         self.start_meas_button = QPushButton("Start Measurement")
         self.start_meas_button.clicked.connect(self.on_start_measurement)
+        self.start_meas_button.setEnabled(False)
+        spectro_controls.addWidget(self.start_meas_button)
         self.stop_meas_button = QPushButton("Stop")
         self.stop_meas_button.clicked.connect(self.on_stop_measurement)
+        self.stop_meas_button.setEnabled(False)
+        spectro_controls.addWidget(self.stop_meas_button)
         self.save_data_button = QPushButton("Save Data")
         self.save_data_button.clicked.connect(self.on_save_data)
-        self.start_meas_button.setEnabled(False)
-        self.stop_meas_button.setEnabled(False)
         self.save_data_button.setEnabled(False)
-        spectro_controls_layout.addWidget(self.toggle_save_button)
-        spectro_controls_layout.addWidget(self.connect_spec_button)
-        spectro_controls_layout.addWidget(self.start_meas_button)
-        spectro_controls_layout.addWidget(self.stop_meas_button)
-        spectro_controls_layout.addWidget(self.save_data_button)
+        spectro_controls.addWidget(self.save_data_button)
 
-        # --- Motor controls ---
+        pg.setConfigOption('background', 'w')
+        pg.setConfigOption('foreground', 'k')
+        self.spec_plot = pg.PlotWidget()
+        self.spec_plot.setLabel('bottom', 'Wavelength', units='nm')
+        self.spec_plot.setLabel('left', 'Intensity', units='counts')
+        self.spec_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.spec_plot.setXRange(260, 600)
+        self.spec_curve = self.spec_plot.plot([], [], pen=pg.mkPen('#2986cc', width=1))
+
+        self.spectro_group = QGroupBox("Spectrometer")
+        sp_layout = QVBoxLayout()
+        sp_layout.addLayout(spectro_controls)
+        sp_layout.addWidget(self.spec_plot, stretch=1)
+        self.spectro_group.setLayout(sp_layout)
+
+        # ── Motor Controls ─────────────────────────────────────────────────────
+        ports = list_ports.comports()
         motor_layout = QGridLayout()
-        motor_com_label = QLabel("Motor COM:")
-        angle_label = QLabel("Angle (°):")
+        motor_layout.addWidget(QLabel("Motor COM:"), 0, 0)
         self.motor_port_combo = QComboBox()
         self.motor_port_combo.setEditable(True)
-        ports = list_ports.comports()
-        for port in ports:
-            name = getattr(port, 'name', port.device)
-            self.motor_port_combo.addItem(name)
+        for p in ports:
+            self.motor_port_combo.addItem(getattr(p, 'name', p.device))
         if self.motor_port_combo.count() == 0:
-            for n in range(1, 10):
-                self.motor_port_combo.addItem(f"COM{n}")
+            for i in range(1, 10):
+                self.motor_port_combo.addItem(f"COM{i}")
+        motor_layout.addWidget(self.motor_port_combo, 0, 1)
         self.motor_connect_button = QPushButton("Connect Motor")
         self.motor_connect_button.clicked.connect(self.on_connect_motor)
+        motor_layout.addWidget(self.motor_connect_button, 0, 2)
+
+        motor_layout.addWidget(QLabel("Angle (°):"), 1, 0)
         self.angle_input = QLineEdit()
         self.angle_input.setFixedWidth(60)
+        motor_layout.addWidget(self.angle_input, 1, 1)
         self.move_button = QPushButton("Move")
         self.move_button.clicked.connect(self.on_move_motor)
         self.move_button.setEnabled(False)
-        motor_layout.addWidget(motor_com_label, 0, 0)
-        motor_layout.addWidget(self.motor_port_combo, 0, 1)
-        motor_layout.addWidget(self.motor_connect_button, 0, 2)
-        motor_layout.addWidget(angle_label, 1, 0)
-        motor_layout.addWidget(self.angle_input, 1, 1)
         motor_layout.addWidget(self.move_button, 1, 2)
 
-        # --- Filter Wheel controls (added in MainWindow.__init__) ---
+        self.motor_group = QGroupBox("Motor")
+        self.motor_group.setLayout(motor_layout)
+
+        # ── Filter Wheel Controls ───────────────────────────────────────────────
         filter_layout = QHBoxLayout()
-        filter_layout.setSpacing(10)
         filter_layout.addWidget(QLabel("FilterWheel COM:"))
         self.filter_port_combo = QComboBox()
         self.filter_port_combo.setEditable(True)
-        # Populate available ports, default to COM17
-        for port in list_ports.comports():
-            name = getattr(port, 'name', port.device)
-            self.filter_port_combo.addItem(name)
+        for p in ports:
+            self.filter_port_combo.addItem(getattr(p, 'name', p.device))
         if self.filter_port_combo.count() == 0:
-            # If no ports detected, provide some common options
-            for n in range(1, 10):
-                self.filter_port_combo.addItem(f"COM{n}")
-        self.filter_port_combo.setCurrentText("COM17")  # default selection
+            for i in range(1, 10):
+                self.filter_port_combo.addItem(f"COM{i}")
+        self.filter_port_combo.setCurrentText("COM17")
         filter_layout.addWidget(self.filter_port_combo)
-        
+
         filter_layout.addWidget(QLabel("Command:"))
         self.filter_cmd_input = QLineEdit()
-        self.filter_cmd_input.setPlaceholderText("Enter filter command")
+        self.filter_cmd_input.setPlaceholderText("F1r, F15, F19 or ?")
         filter_layout.addWidget(self.filter_cmd_input)
-        
+
         self.filter_send_button = QPushButton("Send")
         self.filter_send_button.clicked.connect(self.on_send_filter)
         filter_layout.addWidget(self.filter_send_button)
-        
+
         filter_layout.addWidget(QLabel("Current Pos:"))
         self.filter_pos_label = QLabel("--")
         filter_layout.addWidget(self.filter_pos_label)
-        filter_layout.addStretch(1)  # push controls to the left if there's extra space
-        
-        # Group box for filter wheel
+        filter_layout.addStretch()
+
         self.filter_group = QGroupBox("Filter Wheel")
         self.filter_group.setLayout(filter_layout)
-        
-        # Add the Filter Wheel group box into the main layout (e.g., on the right side panel)
 
-        # Build the right-hand panel
-        right_container = QWidget()
-        right_layout = QVBoxLayout(right_container)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(10)
-        
-        right_layout.addWidget(self.motor_group)     # motor controls
-        right_layout.addWidget(self.filter_group)    # ← your new Filter Wheel panel
-        right_layout.addWidget(self.imu_group)       # IMU controls
-        
-        # Now plug that container into the splitter
-        plots_splitter = QSplitter(Qt.Horizontal)
-        plots_splitter.addWidget(self.spectro_group)
-        plots_splitter.addWidget(right_container)
-        plots_splitter.setStretchFactor(0, 3)
-        plots_splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(plots_splitter, stretch=1)
-
-        
-        # State variables for filter wheel
-        self.filterwheel_serial = None
-        self.filterwheel_connected = False
-        self.current_filter_position = None
-        self.filterwheel_port = None
-        
-        self.filter_send_button.setEnabled(False)  # disable Send until initial reset completes
-        
-        # Attempt to connect to filter wheel on startup and reset to position 1
-        self.filter_thread = filterwheel.FilterWheelConnectThread("COM17")
-        self.filter_thread.result_signal.connect(self.on_filter_connect_result)
-        self.filter_thread.start()
-
-
-        # --- IMU controls ---
-        imu_controls_layout = QHBoxLayout()
-        imu_com_label = QLabel("IMU COM:")
-        baud_label = QLabel("Baud:")
+        # ── IMU Controls & 3D Plot ─────────────────────────────────────────────
+        imu_layout = QHBoxLayout()
+        imu_layout.addWidget(QLabel("IMU COM:"))
         self.imu_port_combo = QComboBox()
         self.imu_port_combo.setEditable(True)
-        for port in ports:
-            name = getattr(port, 'name', port.device)
-            self.imu_port_combo.addItem(name)
-        for n in range(1, 10):
-            pass  # placeholder if none
+        for p in ports:
+            self.imu_port_combo.addItem(getattr(p, 'name', p.device))
+        imu_layout.addWidget(self.imu_port_combo)
+
+        imu_layout.addWidget(QLabel("Baud:"))
         self.imu_baud_combo = QComboBox()
-        for b in [9600, 57600, 115200]:
+        for b in (9600, 57600, 115200):
             self.imu_baud_combo.addItem(str(b))
         self.imu_baud_combo.setCurrentText("9600")
+        imu_layout.addWidget(self.imu_baud_combo)
+
         self.imu_connect_button = QPushButton("Connect IMU")
         self.imu_connect_button.clicked.connect(self.on_connect_imu)
-        imu_controls_layout.addWidget(imu_com_label)
-        imu_controls_layout.addWidget(self.imu_port_combo)
-        imu_controls_layout.addWidget(baud_label)
-        imu_controls_layout.addWidget(self.imu_baud_combo)
-        imu_controls_layout.addWidget(self.imu_connect_button)
+        imu_layout.addWidget(self.imu_connect_button)
 
-        # --- Spectrometer plot setup ---
-        pg.setConfigOption('background', 'w')
-        pg.setConfigOption('foreground', 'k')
-        self.spec_plot_widget = pg.PlotWidget()
-        self.spec_plot_widget.setLabel('bottom', 'Wavelength', units='nm')
-        self.spec_plot_widget.setLabel('left', 'Intensity', units='counts')
-        self.spec_plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        self.spec_plot_widget.setXRange(260, 600)
-        self.spec_curve = self.spec_plot_widget.plot([], [], pen=pg.mkPen('#2986cc', width=1))
-
-        # --- IMU orientation plot and camera feed ---
         self.imu_data_label = QLabel("IMU data: not connected")
         self.figure = plt.figure(figsize=(4, 4))
         self.ax = self.figure.add_subplot(111, projection='3d')
         self.ax.set_title("3D Orientation with Sun")
-        self.ax.set_xlabel("X"); self.ax.set_ylabel("Y"); self.ax.set_zlabel("Z")
         self.ax.set_xlim([-3, 3]); self.ax.set_ylim([-3, 3]); self.ax.set_zlim([-3, 3])
         self.canvas = FigureCanvas(self.figure)
         self.camera_label = QLabel()
         self.camera_label.setFixedHeight(500)
         self.camera_label.setAlignment(Qt.AlignCenter)
-        self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW) if hasattr(cv2, 'CAP_DSHOW') else cv2.VideoCapture(0)
+        self.camera = cv2.VideoCapture(0)
         self.camera_timer = QTimer()
         self.camera_timer.timeout.connect(self.update_camera_frame)
         self.camera_timer.start(30)
 
-        # --- Group boxes and layout ---
-        self.spectro_group = QGroupBox("Spectrometer")
-        spectro_group_layout = QVBoxLayout()
-        spectro_group_layout.addLayout(spectro_controls_layout)
-        spectro_group_layout.addWidget(self.spec_plot_widget, 1)
-        self.spectro_group.setLayout(spectro_group_layout)
-        self.motor_group = QGroupBox("Motor")
-        self.motor_group.setLayout(motor_layout)
         self.imu_group = QGroupBox("IMU")
         imu_group_layout = QVBoxLayout()
-        imu_group_layout.addLayout(imu_controls_layout)
+        imu_group_layout.addLayout(imu_layout)
         imu_group_layout.addWidget(self.camera_label)
         imu_group_layout.addWidget(self.imu_data_label)
         imu_group_layout.addWidget(self.canvas)
         self.imu_group.setLayout(imu_group_layout)
+
+        # ── Right-hand panel & splitter ────────────────────────────────────────
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
         right_layout.addWidget(self.motor_group)
+        right_layout.addWidget(self.filter_group)
         right_layout.addWidget(self.imu_group)
-        plots_splitter = QSplitter(Qt.Horizontal)
-        plots_splitter.addWidget(self.spectro_group)
-        plots_splitter.addWidget(right_container)
-        plots_splitter.setStretchFactor(0, 3)
-        plots_splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(plots_splitter, stretch=1)
 
-        # State variables
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self.spectro_group)
+        splitter.addWidget(right_container)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        main_layout.addWidget(splitter, stretch=1)
+
+        # ── Filter wheel initial connect & reset ───────────────────────────────
+        self.filterwheel_serial = None
+        self.filterwheel_connected = False
+        self.current_filter_position = None
+        self.filter_send_button.setEnabled(False)
+
+        self.filter_thread = filterwheel.FilterWheelConnectThread("COM17")
+        self.filter_thread.result_signal.connect(self.on_filter_connect_result)
+        self.filter_thread.start()
+
+        # ── State vars for other modules ───────────────────────────────────────
         self.motor_serial = None
         self.motor_connected = False
         self.spec_handle = None
@@ -286,7 +249,18 @@ class MainWindow(QMainWindow):
         self.current_motor_angle = 0.0
         self.imu_serial = None
         self.imu_connected = False
-        self.latest_data = {"accel": (0.0, 0.0, 0.0), "gyro": (0.0,0.0,0.0), "mag":(0.0,0.0,0.0), "rpy":(0.0,0.0,0.0), "pressure":0.0, "temperature":0.0, "latitude":39.0, "longitude":-76.0, "TempController_curr": 20, "TempController_set": 20}
+        self.latest_data = {
+            "accel": (0.0, 0.0, 0.0),
+            "gyro": (0.0, 0.0, 0.0),
+            "mag":  (0.0, 0.0, 0.0),
+            "rpy":  (0.0, 0.0, 0.0),
+            "pressure":    0.0,
+            "temperature": 0.0,
+            "latitude":    39.0,
+            "longitude":  -76.0,
+            "TempController_curr": 0.0,
+            "TempController_set": 0.0
+        }
 
     def update_camera_frame(self):
         # Update camera frame to the QLabel
