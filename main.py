@@ -22,41 +22,63 @@ import utils
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Spectrometer, Motor, and IMU Control")
-        self.setMinimumSize(1000, 700)
-        # Data logging state and timers
-        self.continuous_saving = False
-        self.save_data_timer = QTimer()
-        self.save_data_timer.timeout.connect(self.save_continuous_data)
-        # Prepare data directories for logging
-        self.csv_dir = "data_logs/csv"
-        self.log_dir = "data_logs/logs"
-        os.makedirs(self.csv_dir, exist_ok=True)
-        os.makedirs(self.log_dir, exist_ok=True)
-        # File handles for logging
-        self.csv_file = None
-        self.log_file = None
-        self.csv_file_path = None
-        self.log_file_path = None
-        # Status bar for messages
+        self.setWindowTitle("Spectrometer, Motor, IMU & Temperature Control")
+        self.setMinimumSize(1000, 750)
+
+        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        # Central widget and main layout
+
+        # Central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(8)
-        # Optional logo at top-right
+
+        # Logo (optional)
         logo_layout = QHBoxLayout()
         logo_layout.addStretch()
         logo_label = QLabel()
         pixmap = QPixmap("asset/sciglob_symbol.png")
         if not pixmap.isNull():
-            logo_label.setPixmap(pixmap.scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo_label.setPixmap(
+                pixmap.scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
         logo_layout.addWidget(logo_label)
         main_layout.addLayout(logo_layout)
-        # Spectrometer controls
+
+        # --- Temperature Control section ---
+        temp_layout = QHBoxLayout()
+        temp_layout.setSpacing(10)
+        temp_layout.addWidget(QLabel("Set Temp (°C):"))
+        self.set_temp_input = QLineEdit()
+        self.set_temp_input.setFixedWidth(60)
+        self.set_temp_input.setText("20.0")  # default 20°C
+        temp_layout.addWidget(self.set_temp_input)
+        self.send_temp_button = QPushButton("Send Cmd")
+        self.send_temp_button.clicked.connect(self.on_send_temp)
+        temp_layout.addWidget(self.send_temp_button)
+        temp_layout.addSpacing(20)
+        temp_layout.addWidget(QLabel("Current Temp:"))
+        self.current_temp_label = QLabel("-- °C")
+        temp_layout.addWidget(self.current_temp_label)
+        temp_layout.addStretch()
+        main_layout.addLayout(temp_layout)
+
+        # Initialize temperature controller
+        try:
+            self.tc = TC36_25()  # default port COM16
+            self.tc.enable_computer_setpoint()
+            self.tc.power(True)
+            # Timer to update current temperature every second
+            self.temp_timer = QTimer()
+            self.temp_timer.timeout.connect(self.update_temperature)
+            self.temp_timer.start(1000)
+        except Exception as e:
+            self.status_bar.showMessage(f"Temp controller init failed: {e}")
+
+        # --- Spectrometer controls ---
         spectro_controls_layout = QHBoxLayout()
         self.toggle_save_button = QPushButton("Start Saving")
         self.toggle_save_button.setEnabled(False)
@@ -69,60 +91,53 @@ class MainWindow(QMainWindow):
         self.stop_meas_button.clicked.connect(self.on_stop_measurement)
         self.save_data_button = QPushButton("Save Data")
         self.save_data_button.clicked.connect(self.on_save_data)
-        # Initially, only spectrometer connect is enabled
         self.start_meas_button.setEnabled(False)
         self.stop_meas_button.setEnabled(False)
         self.save_data_button.setEnabled(False)
-        # Arrange spectrometer control buttons
         spectro_controls_layout.addWidget(self.toggle_save_button)
         spectro_controls_layout.addWidget(self.connect_spec_button)
         spectro_controls_layout.addWidget(self.start_meas_button)
         spectro_controls_layout.addWidget(self.stop_meas_button)
         spectro_controls_layout.addWidget(self.save_data_button)
-        # Motor controls (in a grid layout for alignment)
+
+        # --- Motor controls ---
         motor_layout = QGridLayout()
         motor_com_label = QLabel("Motor COM:")
         angle_label = QLabel("Angle (°):")
         self.motor_port_combo = QComboBox()
         self.motor_port_combo.setEditable(True)
-        # Populate COM port list for motor
         ports = list_ports.comports()
         for port in ports:
-            name = port.name if hasattr(port, 'name') else port.device
+            name = getattr(port, 'name', port.device)
             self.motor_port_combo.addItem(name)
         if self.motor_port_combo.count() == 0:
-            # If no ports detected, add common placeholders (COM1-COM9 for Windows)
             for n in range(1, 10):
                 self.motor_port_combo.addItem(f"COM{n}")
-        self.motor_port_combo.setCurrentIndex(0)
         self.motor_connect_button = QPushButton("Connect Motor")
         self.motor_connect_button.clicked.connect(self.on_connect_motor)
         self.angle_input = QLineEdit()
         self.angle_input.setFixedWidth(60)
         self.move_button = QPushButton("Move")
         self.move_button.clicked.connect(self.on_move_motor)
-        self.move_button.setEnabled(False)  # disabled until motor is connected
-        # Add motor controls to layout
+        self.move_button.setEnabled(False)
         motor_layout.addWidget(motor_com_label, 0, 0)
         motor_layout.addWidget(self.motor_port_combo, 0, 1)
         motor_layout.addWidget(self.motor_connect_button, 0, 2)
         motor_layout.addWidget(angle_label, 1, 0)
         motor_layout.addWidget(self.angle_input, 1, 1)
         motor_layout.addWidget(self.move_button, 1, 2)
-        # IMU controls
+
+        # --- IMU controls ---
         imu_controls_layout = QHBoxLayout()
         imu_com_label = QLabel("IMU COM:")
         baud_label = QLabel("Baud:")
         self.imu_port_combo = QComboBox()
         self.imu_port_combo.setEditable(True)
-        # Reuse port list for IMU
         for port in ports:
-            name = port.name if hasattr(port, 'name') else port.device
+            name = getattr(port, 'name', port.device)
             self.imu_port_combo.addItem(name)
-        if self.imu_port_combo.count() == 0:
-            for n in range(1, 10):
-                self.imu_port_combo.addItem(f"COM{n}")
-        self.imu_port_combo.setCurrentIndex(0)
+        for n in range(1, 10):
+            pass  # placeholder if none
         self.imu_baud_combo = QComboBox()
         for b in [9600, 57600, 115200]:
             self.imu_baud_combo.addItem(str(b))
@@ -134,17 +149,18 @@ class MainWindow(QMainWindow):
         imu_controls_layout.addWidget(baud_label)
         imu_controls_layout.addWidget(self.imu_baud_combo)
         imu_controls_layout.addWidget(self.imu_connect_button)
-        # Spectrometer plot setup (using PyQtGraph)
+
+        # --- Spectrometer plot setup ---
         pg.setConfigOption('background', 'w')
         pg.setConfigOption('foreground', 'k')
         self.spec_plot_widget = pg.PlotWidget()
         self.spec_plot_widget.setLabel('bottom', 'Wavelength', units='nm')
         self.spec_plot_widget.setLabel('left', 'Intensity', units='counts')
         self.spec_plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        # Set an initial wavelength range for visibility
         self.spec_plot_widget.setXRange(260, 600)
         self.spec_curve = self.spec_plot_widget.plot([], [], pen=pg.mkPen('#2986cc', width=1))
-        # IMU orientation plot (3D using Matplotlib) and camera feed
+
+        # --- IMU orientation plot and camera feed ---
         self.imu_data_label = QLabel("IMU data: not connected")
         self.figure = plt.figure(figsize=(4, 4))
         self.ax = self.figure.add_subplot(111, projection='3d')
@@ -152,16 +168,15 @@ class MainWindow(QMainWindow):
         self.ax.set_xlabel("X"); self.ax.set_ylabel("Y"); self.ax.set_zlabel("Z")
         self.ax.set_xlim([-3, 3]); self.ax.set_ylim([-3, 3]); self.ax.set_zlim([-3, 3])
         self.canvas = FigureCanvas(self.figure)
-        # Camera setup (webcam feed displayed in QLabel)
         self.camera_label = QLabel()
         self.camera_label.setFixedHeight(500)
         self.camera_label.setAlignment(Qt.AlignCenter)
-        # Use DirectShow (CAP_DSHOW) if available on Windows
         self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW) if hasattr(cv2, 'CAP_DSHOW') else cv2.VideoCapture(0)
         self.camera_timer = QTimer()
         self.camera_timer.timeout.connect(self.update_camera_frame)
-        self.camera_timer.start(30)  # ~33 FPS frame update
-        # Group boxes for sections
+        self.camera_timer.start(30)
+
+        # --- Group boxes and layout ---
         self.spectro_group = QGroupBox("Spectrometer")
         spectro_group_layout = QVBoxLayout()
         spectro_group_layout.addLayout(spectro_controls_layout)
@@ -176,22 +191,20 @@ class MainWindow(QMainWindow):
         imu_group_layout.addWidget(self.imu_data_label)
         imu_group_layout.addWidget(self.canvas)
         self.imu_group.setLayout(imu_group_layout)
-        # Split screen: spectrometer (left) vs motor+IMU (right)
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
         right_layout.addWidget(self.motor_group)
         right_layout.addWidget(self.imu_group)
-        right_layout.setStretch(0, 0)
-        right_layout.setStretch(1, 1)
         plots_splitter = QSplitter(Qt.Horizontal)
         plots_splitter.addWidget(self.spectro_group)
         plots_splitter.addWidget(right_container)
         plots_splitter.setStretchFactor(0, 3)
         plots_splitter.setStretchFactor(1, 2)
         main_layout.addWidget(plots_splitter, stretch=1)
-        # Internal state variables
+
+        # State variables
         self.motor_serial = None
         self.motor_connected = False
         self.spec_handle = None
@@ -202,17 +215,8 @@ class MainWindow(QMainWindow):
         self.current_motor_angle = 0.0
         self.imu_serial = None
         self.imu_connected = False
-        # Latest sensor data (IMU and others)
-        self.latest_data = {
-            "accel": (0.0, 0.0, 0.0),
-            "gyro":  (0.0, 0.0, 0.0),
-            "mag":   (0.0, 0.0, 0.0),
-            "rpy":   (0.0, 0.0, 0.0),
-            "pressure": 0.0,
-            "temperature": 0.0,
-            "latitude": 39.0,   # default lat/lon (can be updated by GPS)
-            "longitude": -76.0
-        }
+        self.latest_data = {"accel": (0.0, 0.0, 0.0), "gyro": (0.0,0.0,0.0), "mag":(0.0,0.0,0.0), "rpy":(0.0,0.0,0.0), "pressure":0.0, "temperature":0.0, "latitude":39.0, "longitude":-76.0}
+
     def update_camera_frame(self):
         # Update camera frame to the QLabel
         if self.camera.isOpened():
@@ -640,6 +644,24 @@ class MainWindow(QMainWindow):
             self.log_file.write(log_line)
         except Exception as e:
             self.status_bar.showMessage(f"Error writing log: {e}")
+
+    # --- Temperature control handlers ---
+    def on_send_temp(self):
+        try:
+            temp = float(self.set_temp_input.text().strip())
+            self.tc.set_setpoint(temp)
+            self.status_bar.showMessage(f"Setpoint updated to {temp:.2f} °C")
+        except Exception as e:
+            self.status_bar.showMessage(f"Failed to set temperature: {e}")
+
+    def update_temperature(self):
+        try:
+            t = self.tc.get_temperature()
+            self.current_temp_label.setText(f"{t:.2f} °C")
+        except Exception as e:
+            self.current_temp_label.setText("-- °C")
+            self.status_bar.showMessage(f"Error reading temperature: {e}")
+            
     def closeEvent(self, event):
         """Cleanup on application close."""
         # Stop spectrometer measurement if running
