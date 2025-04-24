@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Spectrometer, Motor, IMU & Temperature Control")
         self.setMinimumSize(1000, 750)
-
+        self._running_threads = []
         # --- Initialize state variables before UI setup ---
         # Track filter wheel commands and errors
         self.last_filter_command = None
@@ -565,16 +565,29 @@ class MainWindow(QMainWindow):
             return
         self.spec_curve.setData(self.wavelengths, self.intensities)
     def on_stop_measurement(self):
-        """Stop the ongoing spectrometer measurement."""
-        if not self.measurement_active or self.spec_handle is None or self.spec_handle == spectrometer.INVALID_AVS_HANDLE_VALUE:
+        """Stop continuous spectral measurement."""
+        if not self.measurement_active:
             return
-        self.start_meas_button.setEnabled(False)
         self.stop_meas_button.setEnabled(False)
-        self.status_bar.showMessage("Stopping spectrometer measurement...")
-        # Use a thread to stop measurement to avoid blocking the UI thread
-        self.stop_thread = spectrometer.StopMeasureThread(self.spec_handle)
-        self.stop_thread.finished_signal.connect(self.on_measurement_stopped)
-        self.stop_thread.start()
+        if hasattr(self, 'spec_timer'):
+            self.spec_timer.stop()
+
+        # Create the stopper and keep a reference
+        stopper = spectrometer.StopMeasureThread(self.spec_handle, parent=self)
+        stopper.finished_signal.connect(self.on_stop_measurement_finished)
+        stopper.finished_signal.connect(lambda: self._running_threads.remove(stopper))
+        stopper.start()
+
+        # Hold onto it so it doesn’t get destroyed
+        self._running_threads.append(stopper)
+
+    def on_stop_measurement_finished(self):
+        """Called when StopMeasureThread emits finished_signal."""
+        self.measurement_active = False
+        self.start_meas_button.setEnabled(True)
+        self.save_data_button.setEnabled(True)
+        self.stop_meas_button.setEnabled(False)
+
     def on_measurement_stopped(self):
         """Clean up after the spectrometer measurement has stopped."""
         self.measurement_active = False
