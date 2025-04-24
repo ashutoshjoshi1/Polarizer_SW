@@ -597,20 +597,31 @@ class MainWindow(QMainWindow):
         self.filter_send_button.setEnabled(False)  # disable button while command is in progress
     
     def on_filter_command_result(self, pos, message):
-        """Slot to handle the result of a filter wheel command (position update or error)."""
-        self.filter_send_button.setEnabled(True)  # re-enable the Send button now that operation finished
+        # Enable send button now that command finished
+        self.filter_send_button.setEnabled(True)
+        
         if pos is not None:
-            # Successfully got a position reading
-            self.current_filter_position = pos
-            self.filter_pos_label.setText(str(pos))
+            # Only update the label if the last command was a query
+            if self.last_filter_command == "?":
+                self.current_filter_position = pos
+                self.filter_pos_label.setText(str(pos))
+            # Clear any previous error flag since we got a response
+            self.filterwheel_comm_issue = False
         else:
-            # Communication error or no response; if serial port got closed due to error, update state
+            # If no position returned and port still open, mark a communication issue
+            if self.filterwheel_serial and self.filterwheel_serial.is_open:
+                self.filterwheel_comm_issue = True
+            else:
+                self.filterwheel_comm_issue = False
+            # If the port closed due to an error, reset state and clear the label
             if self.filterwheel_serial and not self.filterwheel_serial.is_open:
                 self.filterwheel_serial = None
                 self.filterwheel_connected = False
                 self.filter_pos_label.setText("--")
-        # Show the status message (e.g., "Filter wheel moved to position X." or error notice)
+        # Display the status message from the command
         self.status_bar.showMessage(message)
+        # Reset the last command tracker
+        self.last_filter_command = None
 
 
     def on_save_data(self):
