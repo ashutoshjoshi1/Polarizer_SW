@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "C:\Users\Sciglob\Downloads\Polarizer_SW-main\main.py", line 826, in <module>
+    win = MainWindow()
+  File "C:\Users\Sciglob\Downloads\Polarizer_SW-main\main.py", line 261, in __init__
+    self.update_status_indicators()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Sciglob\Downloads\Polarizer_SW-main\main.py", line 293, in update_status_indicators
+    if self.motor_connected:
+       ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute 'motor_connected'
