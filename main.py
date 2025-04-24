@@ -6,20 +6,26 @@ import serial
 import numpy as np
 from datetime import datetime, timezone
 from serial.tools import list_ports
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout
-from PyQt5.QtWidgets import QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox, QSplitter, QStatusBar
+
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox, QSplitter, QStatusBar,
+    QSplashScreen
+)
 from PyQt5.QtCore import QTimer, Qt, QDateTime
 from PyQt5.QtGui import QPixmap, QImage
+
+import motor
+import imu
+import spectrometer
+import filterwheel
+import utils
+from temp_controller import TC36_25
+
 import pyqtgraph as pg
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import motor
-import imu
-import spectrometer
-import utils
-from temp_controller import TC36_25
-import filterwheel 
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -27,18 +33,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Spectrometer, Motor, IMU & Temperature Control")
         self.setMinimumSize(1000, 750)
 
-        # ── Status bar ──────────────────────────────────────────────────────────
+        # Track last filter command and communication issues
+        self.last_filter_command = None
+        self.filterwheel_comm_issue = False
+        self.motor_comm_issue = False
+
+        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
-        # ── Central widget & layout ────────────────────────────────────────────
+        # Central widget & layout
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(8)
 
-        # ── Logo ────────────────────────────────────────────────────────────────
+        # Logo
         logo_layout = QHBoxLayout()
         logo_layout.addStretch()
         logo = QLabel()
@@ -48,7 +59,7 @@ class MainWindow(QMainWindow):
         logo_layout.addWidget(logo)
         main_layout.addLayout(logo_layout)
 
-        # ── Temperature Control ─────────────────────────────────────────────────
+        # Temperature Control
         temp_layout = QHBoxLayout()
         temp_layout.setSpacing(10)
         temp_layout.addWidget(QLabel("Set Temp (°C):"))
@@ -65,7 +76,7 @@ class MainWindow(QMainWindow):
         temp_layout.addStretch()
         main_layout.addLayout(temp_layout)
 
-        # Initialize temperature controller and timer
+        # Initialize temperature controller
         try:
             self.tc = TC36_25()  # COM16 default
             self.tc.enable_computer_setpoint()
@@ -76,7 +87,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_bar.showMessage(f"Temp ctrl init failed: {e}")
 
-        # ── Spectrometer Controls & Plot ────────────────────────────────────────
+        # Spectrometer UI
         spectro_controls = QHBoxLayout()
         self.toggle_save_button = QPushButton("Start Saving")
         self.toggle_save_button.setEnabled(False)
@@ -113,7 +124,7 @@ class MainWindow(QMainWindow):
         sp_layout.addWidget(self.spec_plot, stretch=1)
         self.spectro_group.setLayout(sp_layout)
 
-        # ── Motor Controls ─────────────────────────────────────────────────────
+        # Motor UI
         ports = list_ports.comports()
         motor_layout = QGridLayout()
         motor_layout.addWidget(QLabel("Motor COM:"), 0, 0)
@@ -122,8 +133,7 @@ class MainWindow(QMainWindow):
         for p in ports:
             self.motor_port_combo.addItem(getattr(p, 'name', p.device))
         if self.motor_port_combo.count() == 0:
-            for i in range(1, 10):
-                self.motor_port_combo.addItem(f"COM{i}")
+            for i in range(1, 10): self.motor_port_combo.addItem(f"COM{i}")
         motor_layout.addWidget(self.motor_port_combo, 0, 1)
         self.motor_connect_button = QPushButton("Connect Motor")
         self.motor_connect_button.clicked.connect(self.on_connect_motor)
@@ -141,19 +151,7 @@ class MainWindow(QMainWindow):
         self.motor_group = QGroupBox("Motor")
         self.motor_group.setLayout(motor_layout)
 
-        # ── toggle_data_saving ───────────────────────────────────────────────
-        self.csv_file     = None
-        self.log_file     = None
-        self.csv_dir      = "data"
-        self.log_dir      = "data"
-        os.makedirs(self.csv_dir, exist_ok=True)
-        os.makedirs(self.log_dir, exist_ok=True)
-
-        self.continuous_saving = False
-        self.save_data_timer   = QTimer(self)
-        self.save_data_timer.timeout.connect(self.save_continuous_data)
-
-        # ── Filter Wheel Controls ───────────────────────────────────────────────
+        # Filter Wheel UI
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(QLabel("FilterWheel COM:"))
         self.filter_port_combo = QComboBox()
@@ -161,8 +159,7 @@ class MainWindow(QMainWindow):
         for p in ports:
             self.filter_port_combo.addItem(getattr(p, 'name', p.device))
         if self.filter_port_combo.count() == 0:
-            for i in range(1, 10):
-                self.filter_port_combo.addItem(f"COM{i}")
+            for i in range(1, 10): self.filter_port_combo.addItem(f"COM{i}")
         self.filter_port_combo.setCurrentText("COM17")
         filter_layout.addWidget(self.filter_port_combo)
 
@@ -173,6 +170,7 @@ class MainWindow(QMainWindow):
 
         self.filter_send_button = QPushButton("Send")
         self.filter_send_button.clicked.connect(self.on_send_filter)
+        self.filter_send_button.setEnabled(False)
         filter_layout.addWidget(self.filter_send_button)
 
         filter_layout.addWidget(QLabel("Current Pos:"))
@@ -183,19 +181,17 @@ class MainWindow(QMainWindow):
         self.filter_group = QGroupBox("Filter Wheel")
         self.filter_group.setLayout(filter_layout)
 
-        # ── IMU Controls & 3D Plot ─────────────────────────────────────────────
+        # IMU UI
         imu_layout = QHBoxLayout()
         imu_layout.addWidget(QLabel("IMU COM:"))
         self.imu_port_combo = QComboBox()
         self.imu_port_combo.setEditable(True)
-        for p in ports:
-            self.imu_port_combo.addItem(getattr(p, 'name', p.device))
+        for p in ports: self.imu_port_combo.addItem(getattr(p, 'name', p.device))
         imu_layout.addWidget(self.imu_port_combo)
 
         imu_layout.addWidget(QLabel("Baud:"))
         self.imu_baud_combo = QComboBox()
-        for b in (9600, 57600, 115200):
-            self.imu_baud_combo.addItem(str(b))
+        for b in (9600, 57600, 115200): self.imu_baud_combo.addItem(str(b))
         self.imu_baud_combo.setCurrentText("9600")
         imu_layout.addWidget(self.imu_baud_combo)
 
@@ -213,9 +209,9 @@ class MainWindow(QMainWindow):
         self.camera_label.setFixedHeight(500)
         self.camera_label.setAlignment(Qt.AlignCenter)
         self.camera = cv2.VideoCapture(0)
-        self.camera_timer = QTimer()
-        self.camera_timer.timeout.connect(self.update_camera_frame)
-        self.camera_timer.start(30)
+        camera_timer = QTimer(self)
+        camera_timer.timeout.connect(self.update_camera_frame)
+        camera_timer.start(30)
 
         self.imu_group = QGroupBox("IMU")
         imu_group_layout = QVBoxLayout()
@@ -225,7 +221,7 @@ class MainWindow(QMainWindow):
         imu_group_layout.addWidget(self.canvas)
         self.imu_group.setLayout(imu_group_layout)
 
-        # ── Right-hand panel & splitter ────────────────────────────────────────
+        # Right-hand panel & splitter
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -241,17 +237,30 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         main_layout.addWidget(splitter, stretch=1)
 
-        # ── Filter wheel initial connect & reset ───────────────────────────────
+        # Automation for saving data (unchanged)
+        self.csv_file = None
+        self.log_file = None
+        os.makedirs("data", exist_ok=True)
+        self.continuous_saving = False
+        self.save_data_timer = QTimer(self)
+        self.save_data_timer.timeout.connect(self.save_continuous_data)
+
+        # Filter wheel initial connect & reset
         self.filterwheel_serial = None
         self.filterwheel_connected = False
         self.current_filter_position = None
-        self.filter_send_button.setEnabled(False)
 
-        self.filter_thread = filterwheel.FilterWheelConnectThread("COM17")
+        self.filter_thread = filterwheel.FilterWheelConnectThread(self.filter_port_combo.currentText())
         self.filter_thread.result_signal.connect(self.on_filter_connect_result)
         self.filter_thread.start()
 
-        # ── State vars for other modules ───────────────────────────────────────
+        # Status indicators timer
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_status_indicators)
+        self.status_timer.start(3000)  # every 3 seconds
+        self.update_status_indicators()
+
+        # State vars for other modules (unchanged)
         self.motor_serial = None
         self.motor_connected = False
         self.spec_handle = None
@@ -275,18 +284,89 @@ class MainWindow(QMainWindow):
             "TempController_set": 0.0
         }
 
-    def update_camera_frame(self):
-        # Update camera frame to the QLabel
-        if self.camera.isOpened():
-            ret, frame = self.camera.read()
-            if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                h, w, ch = frame.shape
-                bytes_per_line = ch * w
-                qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                self.camera_label.setPixmap(QPixmap.fromImage(qt_img))
+    # --- Status indicator refresh ---
+    def update_status_indicators(self):
+        ports = {p.device for p in list_ports.comports()}
+        # Motor
+        mport = self.motor_port_combo.currentText().strip()
+        if mport in ports:
+            if self.motor_connected:
+                color = "green" if not self.motor_comm_issue else "yellow"
+            else:
+                color = "red"
+        else:
+            color = "grey"
+        self.motor_group.setTitle(f"<font color='{color}'>●</font> Motor")
+        # Filter Wheel
+        fwport = self.filter_port_combo.currentText().strip()
+        if fwport in ports:
+            if self.filterwheel_connected:
+                color = "green" if not self.filterwheel_comm_issue else "yellow"
+            else:
+                color = "red"
+        else:
+            color = "grey"
+        self.filter_group.setTitle(f"<font color='{color}'>●</font> Filter Wheel")
+        # IMU
+        iport = self.imu_port_combo.currentText().strip()
+        if iport in ports:
+            color = "green" if self.imu_connected else "red"
+        else:
+            color = "grey"
+        self.imu_group.setTitle(f"<font color='{color}'>●</font> IMU")
+
+    # --- Filter wheel connection and commands ---
+    def on_filter_connect_result(self, ser, message):
+        self.status_bar.showMessage(message)
+        if ser and ser.is_open:
+            self.filterwheel_serial = ser
+            self.filterwheel_connected = True
+            self.filter_send_button.setEnabled(True)
+            # Reset to position 1 on start
+            self.last_filter_command = "F1r"
+            th = filterwheel.FilterWheelCommandThread(self.filterwheel_serial, "F1r")
+            th.result_signal.connect(self.on_filter_command_result)
+            th.start()
+        else:
+            self.filterwheel_serial = None
+            self.filterwheel_connected = False
+            self.filter_send_button.setEnabled(False)
+
+    def on_send_filter(self):
+        if not (self.filterwheel_serial and self.filterwheel_serial.is_open):
+            self.status_bar.showMessage("Filter wheel not connected.")
+            return
+        cmd = self.filter_cmd_input.text().strip()
+        if not cmd:
+            self.status_bar.showMessage("Enter a command for filter wheel.")
+            return
+        self.filter_send_button.setEnabled(False)
+        self.status_bar.showMessage(f"Sending '{cmd}' to filter wheel...")
+        self.last_filter_command = cmd
+        th = filterwheel.FilterWheelCommandThread(self.filterwheel_serial, cmd)
+        th.result_signal.connect(self.on_filter_command_result)
+        th.start()
+
+    def on_filter_command_result(self, pos, message):
+        self.filter_send_button.setEnabled(True)
+        if pos is not None:
+            if self.last_filter_command == "?":
+                self.current_filter_position = pos
+                self.filter_pos_label.setText(str(pos))
+            self.filterwheel_comm_issue = False
+        else:
+            if self.filterwheel_serial and self.filterwheel_serial.is_open:
+                self.filterwheel_comm_issue = True
+            else:
+                self.filterwheel_comm_issue = False
+            if not (self.filterwheel_serial and self.filterwheel_serial.is_open):
+                self.filterwheel_serial = None
+                self.filterwheel_connected = False
+                self.filter_pos_label.setText("--")
+        self.status_bar.showMessage(message)
+        self.last_filter_command = None
+
     def on_connect_motor(self):
-        """Connect to the motor by opening its serial port (auto-detect baud)."""
         if self.motor_connected:
             self.status_bar.showMessage("Motor is already connected.")
             return
@@ -294,36 +374,31 @@ class MainWindow(QMainWindow):
         if not port_name:
             self.status_bar.showMessage("Please select a COM port for the motor.")
             return
-        # Disable connect button during attempt
         self.motor_connect_button.setEnabled(False)
         self.status_bar.showMessage(f"Connecting to motor on {port_name}...")
-        # Start background thread to connect to motor
         self.motor_thread = motor.MotorConnectThread(port_name)
         self.motor_thread.result_signal.connect(self.on_motor_connect_result)
         self.motor_thread.start()
+
     def on_motor_connect_result(self, ser_obj, baud, message):
-        """Handle the result of the motor connection attempt."""
         self.motor_connect_button.setEnabled(True)
         if ser_obj and ser_obj.is_open:
-            # Success: store serial and enable controls
             self.motor_serial = ser_obj
             self.motor_connected = True
             self.move_button.setEnabled(True)
+            self.motor_comm_issue = False
         else:
-            # Connection failed
             if self.motor_serial:
-                try:
-                    self.motor_serial.close()
-                except:
-                    pass
+                try: self.motor_serial.close()
+                except: pass
             self.motor_serial = None
             self.motor_connected = False
             self.move_button.setEnabled(False)
-        # Display the status message (success or failure)
+            self.motor_comm_issue = False
         self.status_bar.showMessage(message)
+
     def on_move_motor(self):
-        """Send a move command to the motor to go to the specified angle."""
-        if not self.motor_connected or self.motor_serial is None:
+        if not (self.motor_connected and self.motor_serial):
             self.status_bar.showMessage("Motor not connected.")
             return
         angle_text = self.angle_input.text().strip()
@@ -335,11 +410,13 @@ class MainWindow(QMainWindow):
         success = motor.send_move_command(self.motor_serial, angle)
         if success:
             self.current_motor_angle = angle
+            self.motor_comm_issue = False
             self.status_bar.showMessage(f"Motor moved to angle {angle}°.")
         else:
+            self.motor_comm_issue = True
             self.status_bar.showMessage("Motor move command sent, but no ACK received.")
+
     def on_connect_imu(self):
-        """Connect to the IMU via serial and start the reading thread."""
         if self.imu_connected:
             self.status_bar.showMessage("IMU is already connected.")
             return
@@ -358,115 +435,90 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Failed to open IMU port: {e}")
             return
         self.imu_connected = True
-        # Start background thread to continuously read IMU data
         self.imu_stop_event = imu.start_imu_read_thread(self.imu_serial, self.latest_data)
         self.status_bar.showMessage(f"IMU connected on {port_name} at {baud} baud.")
-        # Start timer to update 3D visualization periodically (~10 Hz)
         self.imu_timer = QTimer()
         self.imu_timer.timeout.connect(self.update_imu_visualization)
         self.imu_timer.start(100)
+
+    def update_camera_frame(self):
+        if self.camera.isOpened():
+            ret, frame = self.camera.read()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = frame.shape
+                bytes_per_line = ch * w
+                qt_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                self.camera_label.setPixmap(QPixmap.fromImage(qt_img))
+    
     def update_imu_visualization(self):
-        """Update the 3D orientation plot and IMU data label with latest readings."""
-        if not self.imu_connected:
-            return
-        roll, pitch, yaw = self.latest_data["rpy"]
-        temp = self.latest_data.get("temperature", 0.0)
-        pres = self.latest_data.get("pressure", 0.0)
-        lat = self.latest_data.get("latitude", 0.0)
-        lon = self.latest_data.get("longitude", 0.0)
-        # Update IMU data text label (roll, pitch, yaw, etc.)
+        if not self.imu_connected: return
+        roll, pitch, yaw = self.latest_data['rpy']
+        temp = self.latest_data.get('temperature', 0.0)
+        pres = self.latest_data.get('pressure', 0.0)
+        lat = self.latest_data.get('latitude', 0.0)
+        lon = self.latest_data.get('longitude', 0.0)
         self.imu_data_label.setText(
             f"Roll={roll:.2f}°, Pitch={pitch:.2f}°, Yaw={yaw:.2f}°\n"
             f"Temp={temp:.2f} °C, Pressure={pres:.2f} hPa\n"
             f"Lat={lat:.6f}, Lon={lon:.6f}"
         )
-        # Redraw 3D orientation cube (and optionally sun position)
         self._draw_device_orientation(roll, pitch, yaw, lat, lon)
         self.canvas.draw()
+        
     def _draw_device_orientation(self, roll, pitch, yaw, lat, lon):
-        """Draw a cube representing the device orientation (in 3D) and optionally the sun position."""
         self.ax.cla()
         self.ax.set_title("3D Orientation with Sun")
         self.ax.set_xlabel("X"); self.ax.set_ylabel("Y"); self.ax.set_zlabel("Z")
         self.ax.set_xlim([-3, 3]); self.ax.set_ylim([-3, 3]); self.ax.set_zlim([-3, 3])
-        # Define cube vertices (cube side ~0.4 units) at origin
         size = 0.2
-        cube = np.array([[-size, -size, -size],
-                         [ size, -size, -size],
-                         [ size,  size, -size],
-                         [-size,  size, -size],
-                         [-size, -size,  size],
-                         [ size, -size,  size],
-                         [ size,  size,  size],
-                         [-size,  size,  size]])
-        # Rotation matrices for roll (X-axis), pitch (Y-axis), yaw (Z-axis) in Z-Y-X sequence
-        rx = np.array([
-            [1, 0, 0],
-            [0, math.cos(math.radians(roll)), -math.sin(math.radians(roll))],
-            [0, math.sin(math.radians(roll)),  math.cos(math.radians(roll))]
-        ])
-        ry = np.array([
-            [ math.cos(math.radians(pitch)), 0, math.sin(math.radians(pitch))],
-            [ 0, 1, 0],
-            [-math.sin(math.radians(pitch)), 0, math.cos(math.radians(pitch))]
-        ])
-        rz = np.array([
-            [math.cos(math.radians(yaw)), -math.sin(math.radians(yaw)), 0],
-            [math.sin(math.radians(yaw)),  math.cos(math.radians(yaw)), 0],
-            [0, 0, 1]
-        ])
-        # Rotate cube points
-        rotated_cube = (rz @ (ry @ (rx @ cube.T))).T
-        # Define cube edges (pairs of vertices)
-        edges = [
-            [rotated_cube[0], rotated_cube[1], rotated_cube[2], rotated_cube[3]],
-            [rotated_cube[4], rotated_cube[5], rotated_cube[6], rotated_cube[7]],
-            [rotated_cube[0], rotated_cube[1], rotated_cube[5], rotated_cube[4]],
-            [rotated_cube[2], rotated_cube[3], rotated_cube[7], rotated_cube[6]],
-            [rotated_cube[1], rotated_cube[2], rotated_cube[6], rotated_cube[5]],
-            [rotated_cube[4], rotated_cube[7], rotated_cube[3], rotated_cube[0]]
-        ]
+        cube = np.array([[-size, -size, -size], [ size, -size, -size], [ size,  size, -size],
+                         [-size,  size, -size], [-size, -size,  size], [ size, -size,  size],
+                         [ size,  size,  size], [-size,  size,  size]])
+        rx = np.array([[1, 0, 0], [0, math.cos(math.radians(roll)), -math.sin(math.radians(roll))],
+                       [0, math.sin(math.radians(roll)),  math.cos(math.radians(roll))]])
+        ry = np.array([[ math.cos(math.radians(pitch)), 0, math.sin(math.radians(pitch))],
+                       [ 0, 1, 0], [-math.sin(math.radians(pitch)), 0, math.cos(math.radians(pitch))]])
+        rz = np.array([[math.cos(math.radians(yaw)), -math.sin(math.radians(yaw)), 0],
+                       [math.sin(math.radians(yaw)),  math.cos(math.radians(yaw)), 0], [0, 0, 1]])
+        rotated = (rz @ (ry @ (rx @ cube.T))).T
+        edges = [ [rotated[0], rotated[1], rotated[2], rotated[3]], [rotated[4], rotated[5], rotated[6], rotated[7]],
+                  [rotated[0], rotated[1], rotated[5], rotated[4]], [rotated[2], rotated[3], rotated[7], rotated[6]],
+                  [rotated[1], rotated[2], rotated[6], rotated[5]], [rotated[4], rotated[7], rotated[3], rotated[0]] ]
         for edge in edges:
-            verts = [list(edge)]
-            self.ax.add_collection3d(Poly3DCollection(verts, facecolors='#8f8f8f', linewidths=1, edgecolors='k', alpha=0.2))
-        # (Optional) Plot sun position relative to IMU orientation
-        # To add: use utils.compute_sun_vector(lat, lon) and plot a point if desired.
-        # Currently left as an optional extension.
+            self.ax.add_collection3d(Poly3DCollection([edge], facecolors='#8f8f8f', linewidths=1, edgecolors='k', alpha=0.2))
+        # Plot sun position if desired:
+        sx, sy, sz = utils.compute_sun_vector(lat, lon)
+        self.ax.scatter([sx], [sy], [sz], marker='o', s=50)
+        
     def on_connect_spectrometer(self):
-        """Connect to the spectrometer (initialize AvaSpec and activate device)."""
         self.status_bar.showMessage("Connecting to spectrometer...")
         try:
             spec_handle, wavelengths, num_pixels, serial_str = spectrometer.connect_spectrometer()
         except Exception as e:
             self.status_bar.showMessage(str(e))
             return
-        # Store spectrometer handle and calibration data
         self.spec_handle = spec_handle
-        # Convert wavelengths to a Python list for easier use
         self.wavelengths = wavelengths.tolist() if isinstance(wavelengths, np.ndarray) else wavelengths
         self.num_pixels = num_pixels
-        # Enable measurement button now that spectrometer is connected
         self.start_meas_button.setEnabled(True)
         self.save_data_button.setEnabled(False)
         self.stop_meas_button.setEnabled(False)
         self.status_bar.showMessage(f"Spectrometer connected (Serial: {serial_str}). Ready to measure.")
+
     def on_start_measurement(self):
-        """Configure and start continuous spectral measurement."""
-        if self.spec_handle is None or self.spec_handle == spectrometer.INVALID_AVS_HANDLE_VALUE:
+        if not self.spec_handle or self.spec_handle == spectrometer.INVALID_AVS_HANDLE_VALUE:
             self.status_bar.showMessage("Spectrometer not connected.")
             return
         if self.measurement_active:
-            return  # already measuring
-        # Prepare measurement (integration time, etc.)
-        integration_time_ms = 50.0  # integration time in milliseconds
+            return
+        integration_time_ms = 50.0
         res = spectrometer.prepare_measurement(self.spec_handle, self.num_pixels, integration_time_ms=integration_time_ms, averages=1)
         if res != 0:
             self.status_bar.showMessage(f"Error preparing measurement (code {res}).")
             return
-        # Start measurement with callback for continuous acquisition
         self.measurement_active = True
         try:
-            # Register callback function for data ready events
             self.cb_func = spectrometer.AVS_MeasureCallbackFunc(self._spectro_callback)
             res = spectrometer.AVS_MeasureCallback(self.spec_handle, self.cb_func, -1)
         except Exception as e:
@@ -477,16 +529,14 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"AVS_MeasureCallback failed (code {res}).")
             self.measurement_active = False
             return
-        # Record current integration time (µs) for logging
         self.current_integration_time_us = int(integration_time_ms * 1000)
-        # Update UI state
         self.start_meas_button.setEnabled(False)
         self.stop_meas_button.setEnabled(True)
-        # Start a timer to update the spectrometer plot at 5 Hz
         self.spec_timer = QTimer()
         self.spec_timer.timeout.connect(self.update_spectrometer_plot)
         self.spec_timer.start(200)
         self.status_bar.showMessage("Spectrometer measurement started.")
+        
     def _spectro_callback(self, p_data, p_user):
         """Callback function called by AvaSpec DLL when new spectral data is ready."""
         # p_data[0] = device handle, p_user[0] = status code
@@ -540,89 +590,7 @@ class MainWindow(QMainWindow):
         # Stop plot update timer
         if hasattr(self, 'spec_timer'):
             self.spec_timer.stop()
-
-    def on_filter_connect_result(self, ser_obj, message):
-        """Slot for filter wheel connection attempt result."""
-        self.filter_send_button.setEnabled(True)  # re-enable send on completion
-        if ser_obj and ser_obj.is_open:
-            # Connection succeeded
-            self.filterwheel_serial = ser_obj
-            self.filterwheel_connected = True
-            self.filterwheel_port = ser_obj.port  # store the port name
-            # Immediately send "F1r" to reset wheel to position 1 in the background
-            self.status_bar.showMessage("Filter wheel connected. Resetting to position 1...")
-            self.filter_cmd_thread = filterwheel.FilterWheelCommandThread(self.filterwheel_serial, "F1r")
-            self.filter_cmd_thread.result_signal.connect(self.on_filter_command_result)
-            self.filter_cmd_thread.start()
-            self.filter_send_button.setEnabled(False)  # disable until reset command finishes
-        else:
-            # Connection failed
-            self.filterwheel_serial = None
-            self.filterwheel_connected = False
-            self.status_bar.showMessage(message)
-            # (Leave position label as "--")
     
-    def on_send_filter(self):
-        """Send a user-entered command to the filter wheel."""
-        cmd = self.filter_cmd_input.text().strip()
-        if not cmd:
-            self.status_bar.showMessage("Please enter a filter wheel command.")
-            return
-        port_name = self.filter_port_combo.currentText().strip()
-        if not port_name:
-            self.status_bar.showMessage("Please select a COM port for the filter wheel.")
-            return
-        # If not connected or if port changed, (re)open the serial port
-        if self.filterwheel_serial is None or not self.filterwheel_serial.is_open or port_name != self.filterwheel_port:
-            # Close existing connection if open
-            if self.filterwheel_serial and self.filterwheel_serial.is_open:
-                try: 
-                    self.filterwheel_serial.close()
-                except: 
-                    pass
-            try:
-                # Open the new port (4800 baud, 8N1)
-                self.filterwheel_serial = serial.Serial(port_name, baudrate=4800, timeout=1)
-                self.filterwheel_port = port_name
-                self.filterwheel_connected = True
-            except Exception as e:
-                self.filterwheel_serial = None
-                self.filterwheel_connected = False
-                self.status_bar.showMessage(f"Failed to open {port_name}: {e}")
-                return
-        # Send the command in background thread
-        self.filter_cmd_thread = filterwheel.FilterWheelCommandThread(self.filterwheel_serial, cmd)
-        self.filter_cmd_thread.result_signal.connect(self.on_filter_command_result)
-        self.filter_cmd_thread.start()
-        self.filter_send_button.setEnabled(False)  # disable button while command is in progress
-    
-    def on_filter_command_result(self, pos, message):
-        # Enable send button now that command finished
-        self.filter_send_button.setEnabled(True)
-        
-        if pos is not None:
-            # Only update the label if the last command was a query
-            if self.last_filter_command == "?":
-                self.current_filter_position = pos
-                self.filter_pos_label.setText(str(pos))
-            # Clear any previous error flag since we got a response
-            self.filterwheel_comm_issue = False
-        else:
-            # If no position returned and port still open, mark a communication issue
-            if self.filterwheel_serial and self.filterwheel_serial.is_open:
-                self.filterwheel_comm_issue = True
-            else:
-                self.filterwheel_comm_issue = False
-            # If the port closed due to an error, reset state and clear the label
-            if self.filterwheel_serial and not self.filterwheel_serial.is_open:
-                self.filterwheel_serial = None
-                self.filterwheel_connected = False
-                self.filter_pos_label.setText("--")
-        # Display the status message from the command
-        self.status_bar.showMessage(message)
-        # Reset the last command tracker
-        self.last_filter_command = None
-
 
     def on_save_data(self):
         """Save the current spectral data to a CSV file (snapshot of wavelengths and intensities)."""
@@ -848,6 +816,15 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    # Splash screen
+    splash_pix = QPixmap("asset/splash.jpg")
+    if not splash_pix.isNull():
+        splash = QSplashScreen(splash_pix)
+        splash.show()
+        app.processEvents()
+    # Create and show main window
     win = MainWindow()
-    win.show()
+    win.showFullScreen()
+    if 'splash' in locals():
+        splash.finish(win)
     sys.exit(app.exec_())
