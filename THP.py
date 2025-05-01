@@ -36,6 +36,9 @@ def read_sensor_data(port_name, baud_rate=9600, timeout=1):
                 line = ser.readline().decode('utf-8').strip()
                 response += line
                 
+                # Print raw response for debugging
+                print(f"Raw response: {response}")
+                
                 # Try to parse as JSON to see if we have a complete response
                 try:
                     data = json.loads(response)
@@ -52,17 +55,27 @@ def read_sensor_data(port_name, baud_rate=9600, timeout=1):
         try:
             data = json.loads(response)
             
-            # Extract temperature, humidity, and pressure
-            # (Adjust the keys based on the actual JSON structure from your hardware)
-            temperature = data.get('Temperature')
-            humidity = data.get('Humidity')
-            pressure = data.get('Pressure')
+            # Extract temperature, humidity, and pressure based on the actual JSON structure:
+            # "Sensors": [ { "ID": "BME280", "Temperature": 25.61, "Humidity": 31.6, "Pressure": 1009.32 } ]
+            sensors = data.get('Sensors', [])
             
-            return {
-                'temperature': temperature,
-                'humidity': humidity,
-                'pressure': pressure
-            }
+            if sensors and len(sensors) > 0:
+                sensor = sensors[0]  # Get the first sensor in the array
+                
+                sensor_id = sensor.get('ID')
+                temperature = sensor.get('Temperature')
+                humidity = sensor.get('Humidity')
+                pressure = sensor.get('Pressure')
+                
+                return {
+                    'sensor_id': sensor_id,
+                    'temperature': temperature,
+                    'humidity': humidity,
+                    'pressure': pressure
+                }
+            else:
+                print(f"No sensor data found in response: {data}")
+                return None
             
         except json.JSONDecodeError as e:
             print(f"Error parsing JSON response: {e}")
@@ -88,6 +101,7 @@ def main():
     
     if sensor_data:
         print("\nSensor readings:")
+        print(f"Sensor ID: {sensor_data['sensor_id']}")
         print(f"Temperature: {sensor_data['temperature']}")
         print(f"Humidity: {sensor_data['humidity']}")
         print(f"Pressure: {sensor_data['pressure']}")
